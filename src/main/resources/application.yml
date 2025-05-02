@@ -1,0 +1,15 @@
+spring:
+  application:
+    name: mysheet-mcp
+  ai:
+    mcp:
+      server:
+        name: webflux-mcp-server
+        version: 1.0.0
+        type: ASYNC  # Recommended for reactive applications
+        sse-message-endpoint: /mcp/messages
+upload:
+  path: /Users/wuliang/workspace/mysheet-mcp/src/test/resources/upload
+  tmp: /Users/wuliang/workspace/mysheet-mcp/src/test/resources/tmp
+domain:
+  static: http://localhost:8080/static/tmp/
