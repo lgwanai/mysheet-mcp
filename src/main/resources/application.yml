@@ -9,7 +9,10 @@ spring:
         type: ASYNC  # Recommended for reactive applications
         sse-message-endpoint: /mcp/messages
 upload:
+#  path: /var/mysheet-mcp/upload
   path: /Users/wuliang/workspace/mysheet-mcp/src/test/resources/upload
+#  tmp: /var/mysheet-mcp/tmp
   tmp: /Users/wuliang/workspace/mysheet-mcp/src/test/resources/tmp
 domain:
-  static: http://localhost:8080/static/tmp/
+#  static: http://static.wo.link/tmp/
+  static: http://localhost:8080/tmp/

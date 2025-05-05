@@ -11,6 +11,7 @@ import java.util.Map;
 
 public class ClientSSETest {
     public static void main(String[] args) {
+//        var transport = new WebFluxSseClientTransport(WebClient.builder().baseUrl("http://mysheet.wo.link"));
         var transport = new WebFluxSseClientTransport(WebClient.builder().baseUrl("http://localhost:8080"));
         var client = McpClient.sync(transport).build();
         client.initialize();
@@ -20,8 +21,8 @@ public class ClientSSETest {
         System.out.println("可用工具 = " + toolsList);
 
         // 获取成都的天气
-        McpSchema.CallToolResult weatherForecastResult = client.callTool(new McpSchema.CallToolRequest("excel2json",
-                Map.of("excelFile", new File("/Users/wuliang/workspace/hotelXpress/src/test/resources/excelFile/2025年省专公司协议酒店报送信息表-昆明悦朗花园酒店.xls"))));
+        McpSchema.CallToolResult weatherForecastResult = client.callTool(new McpSchema.CallToolRequest("excel2Json",
+                Map.of("excelFileURL", "http://static.wo.link/upload/41f0ae83-7e43-4cb0-811d-22e51d820696.xlsx")));
         System.out.println("返回结果: " + weatherForecastResult.content());
 
         client.closeGracefully();

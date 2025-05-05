@@ -37,6 +37,7 @@ public class Excel2JsonUtil {
     public JSONObject toJson(File excelFile) throws IOException {
         log.debug("调用 Excel2JsonUtil toJson()方法");
         Map<String, String> fileMap = extractFilesFromExcel(excelFile);
+        log.info("fileMap:{}",fileMap);
         JSONObject json = new JSONObject();
         JSONArray data = new JSONArray();
         try (Workbook workbook = getWorkbook(excelFile)) {
@@ -57,7 +58,7 @@ public class Excel2JsonUtil {
                         colObj.put("colIndex", colName);
                         if(!fileMap.isEmpty() && fileMap.containsKey(colName+rowNum)){
                             colObj.put("value", "file::"+DOMAIN_STATIC+ fileMap.get(colName+rowNum));
-                            log.debug("value:{}  replaced ->  fileName:{}" , getCellValue(cell),fileMap.get(colName+rowNum));
+                            log.info("value:{}  replaced ->  fileName:{}" , getCellValue(cell),fileMap.get(colName+rowNum));
                         }else{
                             colObj.put("value", getCellValue(cell));
                         }
@@ -225,6 +226,19 @@ public class Excel2JsonUtil {
                                 log.error("Error extracting XSSF embedded file: {}", e.getMessage());
                                 // 尝试备用方法
                                 extractXSSFObjectDataFallback(obj, shape, excelFile.getName(), result);
+                            }
+                        }// 处理HSSFPicture类型
+                        else if (shape instanceof XSSFPicture picture) {
+                            log.debug("Found HSSFPicture object");
+                            try {
+                                PictureData pictureData = picture.getPictureData();
+                                byte[] fileData = pictureData.getData();
+                                String coord = getShapeCoordinate(shape);
+                                String fileName = saveEmbeddedFile(fileData, excelFile.getName());
+                                result.put(coord, fileName);
+                                log.debug("Extracted HSSF picture at {} saved as {}", coord, fileName);
+                            } catch (Exception e) {
+                                log.error("Error extracting HSSFPicture: {}", e.getMessage(), e);
                             }
                         }
                     }
