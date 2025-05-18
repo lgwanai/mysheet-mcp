@@ -28,12 +28,12 @@ import java.util.Map;
 public class Excel2JsonUtil {
     private static final Log log = LogFactory.get();
     private final DateTimeFormatter TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
-    @Value("${upload.tmp}")
-    private String TMP_DIR;
-    @Value("${upload.path}")
-    private String UPLOAD_DIR;
-    @Value("${domain.static}")
-    private String DOMAIN_STATIC;
+    @Value("${storage.attachment}")
+    private String STORAGE_ATTACHMENT_DIR;
+    @Value("${storage.file}")
+    private String STORAGE_FILE_DIR;
+    @Value("${url.attachment}")
+    private String URL_ATTACHMENT;
     public JSONObject toJson(File excelFile) throws IOException {
         log.debug("调用 Excel2JsonUtil toJson()方法");
         Map<String, String> fileMap = extractFilesFromExcel(excelFile);
@@ -57,7 +57,7 @@ public class Excel2JsonUtil {
 
                         colObj.put("colIndex", colName);
                         if(!fileMap.isEmpty() && fileMap.containsKey(colName+rowNum)){
-                            colObj.put("value", "file::"+DOMAIN_STATIC+ fileMap.get(colName+rowNum));
+                            colObj.put("value", "file::"+ URL_ATTACHMENT + fileMap.get(colName+rowNum));
                             log.info("value:{}  replaced ->  fileName:{}" , getCellValue(cell),fileMap.get(colName+rowNum));
                         }else{
                             colObj.put("value", getCellValue(cell));
@@ -121,7 +121,7 @@ public class Excel2JsonUtil {
     }
 
     private Map<String, String> extractFilesFromExcel(File excelFile) throws IOException {
-        Path tmpPath = Paths.get(TMP_DIR);
+        Path tmpPath = Paths.get(STORAGE_ATTACHMENT_DIR);
         if (!Files.exists(tmpPath)) {
             Files.createDirectories(tmpPath);
         }
@@ -274,7 +274,7 @@ public class Excel2JsonUtil {
         String extension = getFileExtension(fileData);
         String fileName = timestamp + "_" + baseName + extension;
 
-        Path filePath = Paths.get(TMP_DIR, fileName);
+        Path filePath = Paths.get(STORAGE_ATTACHMENT_DIR, fileName);
         Files.write(filePath, fileData);
 
         return fileName;
