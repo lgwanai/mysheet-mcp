@@ -1,3 +1,6 @@
+server:
+  port: 8080 # MCP SSE Port
+
 spring:
   application:
     name: mysheet-mcp
@@ -7,9 +10,13 @@ spring:
         name: webflux-mcp-server
         version: 1.0.0
         type: ASYNC  # Recommended for reactive applications
-        sse-message-endpoint: /mcp/messages
+        sse-message-endpoint: /sse
 storage:
-  file: /var/mysheet-mcp/upload
-  attachment: /var/mysheet-mcp/tmp
-url:
-  attachment: http://localhost:8080/
+  file: storage/upload
+  cache: storage/cache
+
+cos:
+  secret-id: ${COS_SECRET_ID}
+  secret-key: ${COS_SECRET_KEY}
+  region: ap-beijing
+  bucket-name: chinamobile-1320739042

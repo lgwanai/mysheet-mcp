@@ -4,14 +4,17 @@ import cn.hutool.log.Log;
 import cn.hutool.log.LogFactory;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
+import link.wo.mysheetmcp.service.CosService;
 import org.apache.poi.hssf.usermodel.*;
 import org.apache.poi.openxml4j.opc.PackagePart;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddress;
 import org.apache.poi.xssf.usermodel.*;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -28,16 +31,28 @@ import java.util.Map;
 public class Excel2JsonUtil {
     private static final Log log = LogFactory.get();
     private final DateTimeFormatter TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
-    @Value("${storage.attachment}")
-    private String STORAGE_ATTACHMENT_DIR;
     @Value("${storage.file}")
     private String STORAGE_FILE_DIR;
-    @Value("${url.attachment}")
-    private String URL_ATTACHMENT;
-    public JSONObject toJson(File excelFile) throws IOException {
-        log.debug("调用 Excel2JsonUtil toJson()方法");
+
+    @Autowired
+    private CosService cosService;
+
+    public JSONObject toJson(File excelFile, String type) throws IOException {
+        log.debug("调用 Excel2JsonUtil toJson()方法, type:{}", type);
         Map<String, String> fileMap = extractFilesFromExcel(excelFile);
-        log.info("fileMap:{}",fileMap);
+        log.info("fileMap:{}", fileMap);
+
+        if ("row-object".equalsIgnoreCase(type)) {
+            return toJsonRowObject(excelFile, fileMap);
+        }
+        return toJsonBasic(excelFile, fileMap);
+    }
+
+    public JSONObject toJson(File excelFile) throws IOException {
+        return toJson(excelFile, "basic");
+    }
+
+    private JSONObject toJsonBasic(File excelFile, Map<String, String> fileMap) throws IOException {
         JSONObject json = new JSONObject();
         JSONArray data = new JSONArray();
         try (Workbook workbook = getWorkbook(excelFile)) {
@@ -57,10 +72,12 @@ public class Excel2JsonUtil {
 
                         colObj.put("colIndex", colName);
                         if(!fileMap.isEmpty() && fileMap.containsKey(colName+rowNum)){
-                            colObj.put("value", "file::"+ URL_ATTACHMENT + fileMap.get(colName+rowNum));
-                            log.info("value:{}  replaced ->  fileName:{}" , getCellValue(cell),fileMap.get(colName+rowNum));
+                            // Use the COS URL directly
+                            colObj.put("type", "file");
+                            colObj.put("value", fileMap.get(colName+rowNum));
+                            log.info("cell:{}  replaced ->  url:{}" , colName+rowNum, fileMap.get(colName+rowNum));
                         }else{
-                            colObj.put("value", getCellValue(cell));
+                            setCellValue(colObj, cell);
                         }
 
                         if (sheet.getMergedRegions() != null) {
@@ -89,6 +106,78 @@ public class Excel2JsonUtil {
         return json;
     }
 
+    private JSONObject toJsonRowObject(File excelFile, Map<String, String> fileMap) throws IOException {
+        JSONObject json = new JSONObject();
+        JSONObject header = new JSONObject();
+        JSONArray data = new JSONArray();
+
+        try (Workbook workbook = getWorkbook(excelFile)) {
+            if (workbook.getNumberOfSheets() > 0) {
+                Sheet sheet = workbook.getSheetAt(0);
+                int lastRowNum = sheet.getLastRowNum();
+
+                // Process Header (Row 0)
+                Row headerRow = sheet.getRow(0);
+                int maxColIx = 0;
+                if (headerRow != null) {
+                    maxColIx = headerRow.getLastCellNum();
+                    for (int i = 0; i < maxColIx; i++) {
+                        Cell cell = headerRow.getCell(i);
+                        String colName = getExcelColumnName(i) + "1";
+                        if (cell != null) {
+                            header.put(colName, cell.toString());
+                        } else {
+                            header.put(colName, "");
+                        }
+                    }
+                }
+
+                // Process Data (Rows 1 to lastRowNum)
+                for (int i = 1; i <= lastRowNum; i++) {
+                    Row row = sheet.getRow(i);
+                    JSONObject rowData = new JSONObject();
+                    rowData.put("index", i);
+
+                    for (int j = 0; j < maxColIx; j++) {
+                        String key = getExcelColumnName(j) + "1";
+                        JSONObject cellObj = new JSONObject();
+
+                        int targetRow = i;
+                        int targetCol = j;
+
+                        if (sheet.getMergedRegions() != null) {
+                            for (CellRangeAddress region : sheet.getMergedRegions()) {
+                                if (region.isInRange(i, j)) {
+                                    targetRow = region.getFirstRow();
+                                    targetCol = region.getFirstColumn();
+                                    break;
+                                }
+                            }
+                        }
+
+                        Row srcRow = sheet.getRow(targetRow);
+                        Cell srcCell = (srcRow != null) ? srcRow.getCell(targetCol) : null;
+                        String srcColName = getExcelColumnName(targetCol);
+                        String srcCoord = srcColName + (targetRow + 1);
+
+                        if (!fileMap.isEmpty() && fileMap.containsKey(srcCoord)) {
+                            cellObj.put("type", "file");
+                            cellObj.put("value", fileMap.get(srcCoord));
+                        } else {
+                            setCellValue(cellObj, srcCell);
+                        }
+
+                        rowData.put(key, cellObj);
+                    }
+                    data.add(rowData);
+                }
+            }
+        }
+        json.put("header", header);
+        json.put("data", data);
+        return json;
+    }
+
     private Workbook getWorkbook(File file) throws IOException {
         String fileName = file.getName();
         try (FileInputStream fis = new FileInputStream(file)) {
@@ -110,22 +199,78 @@ public class Excel2JsonUtil {
         return columnName.toString();
     }
 
-    private Object getCellValue(Cell cell) {
-        return switch (cell.getCellType()) {
-            case STRING -> cell.getStringCellValue();
-            case NUMERIC -> cell.getNumericCellValue();
-            case BOOLEAN -> cell.getBooleanCellValue();
-            case FORMULA -> cell.getCellFormula();
-            default -> "";
-        };
+    private void setCellValue(JSONObject colObj, Cell cell) {
+        if (cell == null) {
+            colObj.put("type", "text");
+            colObj.put("value", "");
+            return;
+        }
+
+        switch (cell.getCellType()) {
+            case STRING -> {
+                colObj.put("type", "text");
+                colObj.put("value", cell.getStringCellValue());
+            }
+            case NUMERIC -> {
+                if (DateUtil.isCellDateFormatted(cell)) {
+                    colObj.put("type", "date");
+                    // 使用 DataFormatter 格式化日期，或者手动格式化
+                    // 用户要求 yyyy-mm-dd
+                    java.util.Date date = cell.getDateCellValue();
+                    if (date != null) {
+                        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd");
+                        colObj.put("value", sdf.format(date));
+                    } else {
+                        colObj.put("value", "");
+                    }
+                } else {
+                    // Check for currency format
+                    String formatString = cell.getCellStyle().getDataFormatString();
+                    if (formatString != null && (formatString.contains("￥") || formatString.contains("$") || formatString.contains("€") || formatString.contains("£"))) {
+                        colObj.put("type", "money");
+                        DataFormatter dataFormatter = new DataFormatter();
+                        colObj.put("value", dataFormatter.formatCellValue(cell));
+                    } else {
+                        colObj.put("type", "number");
+                        colObj.put("value", cell.getNumericCellValue());
+                    }
+                }
+            }
+            case BOOLEAN -> {
+                colObj.put("type", "boolean");
+                colObj.put("value", cell.getBooleanCellValue());
+            }
+            case FORMULA -> {
+                // 公式比较复杂，可能是数字、字符串等
+                // 使用 CachedFormulaResultType
+                switch (cell.getCachedFormulaResultType()) {
+                    case STRING -> {
+                        colObj.put("type", "text");
+                        colObj.put("value", cell.getStringCellValue());
+                    }
+                    case NUMERIC -> {
+                         // 公式里的日期判断比较麻烦，简单处理为数字
+                         colObj.put("type", "number");
+                         colObj.put("value", cell.getNumericCellValue());
+                    }
+                    case BOOLEAN -> {
+                        colObj.put("type", "boolean");
+                        colObj.put("value", cell.getBooleanCellValue());
+                    }
+                    default -> {
+                        colObj.put("type", "text");
+                        colObj.put("value", "");
+                    }
+                }
+            }
+            default -> {
+                colObj.put("type", "text");
+                colObj.put("value", "");
+            }
+        }
     }
 
     private Map<String, String> extractFilesFromExcel(File excelFile) throws IOException {
-        Path tmpPath = Paths.get(STORAGE_ATTACHMENT_DIR);
-        if (!Files.exists(tmpPath)) {
-            Files.createDirectories(tmpPath);
-        }
-
         Map<String, String> result = new HashMap<>();
 
         try (Workbook workbook = getWorkbook(excelFile)) {
@@ -274,10 +419,13 @@ public class Excel2JsonUtil {
         String extension = getFileExtension(fileData);
         String fileName = timestamp + "_" + baseName + extension;
 
-        Path filePath = Paths.get(STORAGE_ATTACHMENT_DIR, fileName);
-        Files.write(filePath, fileData);
-
-        return fileName;
+        // Upload to COS
+        String key = "attachment/" + fileName;
+        try (InputStream is = new ByteArrayInputStream(fileData)) {
+            com.qcloud.cos.model.ObjectMetadata metadata = new com.qcloud.cos.model.ObjectMetadata();
+            metadata.setContentLength(fileData.length);
+            return cosService.uploadFile(key, is, metadata);
+        }
     }
 
     private String getFileExtension(byte[] fileData) {

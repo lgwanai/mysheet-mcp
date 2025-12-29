@@ -31,3 +31,18 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### MySheet MCP ###
+storage/
+temp/
+tmp/
+upload/
+cache/
+logs/
+*.log
+application.yml
+src/main/resources/application.yml
+src/test/resources/application.yml
+src/test/
+test/
+
