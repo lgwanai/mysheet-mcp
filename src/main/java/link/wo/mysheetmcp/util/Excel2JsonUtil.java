@@ -26,6 +26,9 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.concurrent.*;
 
 @Component
 public class Excel2JsonUtil {
@@ -39,138 +42,138 @@ public class Excel2JsonUtil {
 
     public JSONObject toJson(File excelFile, String type) throws IOException {
         log.debug("调用 Excel2JsonUtil toJson()方法, type:{}", type);
-        Map<String, String> fileMap = extractFilesFromExcel(excelFile);
-        log.info("fileMap:{}", fileMap);
+        
+        try (Workbook workbook = getWorkbook(excelFile)) {
+            Map<String, String> fileMap = extractFilesFromExcel(workbook, excelFile.getName());
+            log.info("fileMap:{}", fileMap);
 
-        if ("row-object".equalsIgnoreCase(type)) {
-            return toJsonRowObject(excelFile, fileMap);
+            if ("row-object".equalsIgnoreCase(type)) {
+                return toJsonRowObject(workbook, fileMap);
+            }
+            return toJsonBasic(workbook, fileMap);
         }
-        return toJsonBasic(excelFile, fileMap);
     }
 
     public JSONObject toJson(File excelFile) throws IOException {
         return toJson(excelFile, "basic");
     }
 
-    private JSONObject toJsonBasic(File excelFile, Map<String, String> fileMap) throws IOException {
+    private JSONObject toJsonBasic(Workbook workbook, Map<String, String> fileMap) {
         JSONObject json = new JSONObject();
         JSONArray data = new JSONArray();
-        try (Workbook workbook = getWorkbook(excelFile)) {
-            for (int sheetIndex = 0; sheetIndex < workbook.getNumberOfSheets(); sheetIndex++) {
-                Sheet sheet = workbook.getSheetAt(sheetIndex);
-                JSONObject sheetObj = new JSONObject();
-                sheetObj.put("sheet", sheet.getSheetName());
-                JSONArray rows = new JSONArray();
-                for (Row row : sheet) {
-                    JSONObject rowObj = new JSONObject();
-                    int rowNum = row.getRowNum()+1;
-                    rowObj.put("rowIndex", rowNum);
-                    JSONArray columns = new JSONArray();
-                    for (Cell cell : row) {
-                        JSONObject colObj = new JSONObject();
-                        String colName = getExcelColumnName(cell.getColumnIndex());
+        
+        for (int sheetIndex = 0; sheetIndex < workbook.getNumberOfSheets(); sheetIndex++) {
+            Sheet sheet = workbook.getSheetAt(sheetIndex);
+            JSONObject sheetObj = new JSONObject();
+            sheetObj.put("sheet", sheet.getSheetName());
+            JSONArray rows = new JSONArray();
+            for (Row row : sheet) {
+                JSONObject rowObj = new JSONObject();
+                int rowNum = row.getRowNum()+1;
+                rowObj.put("rowIndex", rowNum);
+                JSONArray columns = new JSONArray();
+                for (Cell cell : row) {
+                    JSONObject colObj = new JSONObject();
+                    String colName = getExcelColumnName(cell.getColumnIndex());
 
-                        colObj.put("colIndex", colName);
-                        if(!fileMap.isEmpty() && fileMap.containsKey(colName+rowNum)){
-                            // Use the COS URL directly
-                            colObj.put("type", "file");
-                            colObj.put("value", fileMap.get(colName+rowNum));
-                            log.info("cell:{}  replaced ->  url:{}" , colName+rowNum, fileMap.get(colName+rowNum));
-                        }else{
-                            setCellValue(colObj, cell);
-                        }
+                    colObj.put("colIndex", colName);
+                    if(!fileMap.isEmpty() && fileMap.containsKey(colName+rowNum)){
+                        // Use the COS URL directly
+                        colObj.put("type", "file");
+                        colObj.put("value", fileMap.get(colName+rowNum));
+                        log.info("cell:{}  replaced ->  url:{}" , colName+rowNum, fileMap.get(colName+rowNum));
+                    }else{
+                        setCellValue(colObj, cell);
+                    }
 
-                        if (sheet.getMergedRegions() != null) {
-                            for (CellRangeAddress region : sheet.getMergedRegions()) {
-                                if (region.isInRange(cell.getRowIndex(), cell.getColumnIndex())) {
-                                    if (region.getLastRow() - region.getFirstRow() + 1 > 1) {
-                                        colObj.put("rowspan", region.getLastRow() - region.getFirstRow() + 1);
-                                    }
-                                    if (region.getLastColumn() - region.getFirstColumn() + 1 > 1) {
-                                        colObj.put("colspan", region.getLastColumn() - region.getFirstColumn() + 1);
-                                    }
-                                    break;
+                    if (sheet.getMergedRegions() != null) {
+                        for (CellRangeAddress region : sheet.getMergedRegions()) {
+                            if (region.isInRange(cell.getRowIndex(), cell.getColumnIndex())) {
+                                if (region.getLastRow() - region.getFirstRow() + 1 > 1) {
+                                    colObj.put("rowspan", region.getLastRow() - region.getFirstRow() + 1);
                                 }
+                                if (region.getLastColumn() - region.getFirstColumn() + 1 > 1) {
+                                    colObj.put("colspan", region.getLastColumn() - region.getFirstColumn() + 1);
+                                }
+                                break;
                             }
                         }
-                        columns.add(colObj);
                     }
-                    rowObj.put("columns", columns);
-                    rows.add(rowObj);
+                    columns.add(colObj);
                 }
-                sheetObj.put("rows", rows);
-                data.add(sheetObj);
+                rowObj.put("columns", columns);
+                rows.add(rowObj);
             }
+            sheetObj.put("rows", rows);
+            data.add(sheetObj);
         }
         json.put("data", data);
         return json;
     }
 
-    private JSONObject toJsonRowObject(File excelFile, Map<String, String> fileMap) throws IOException {
+    private JSONObject toJsonRowObject(Workbook workbook, Map<String, String> fileMap) {
         JSONObject json = new JSONObject();
         JSONObject header = new JSONObject();
         JSONArray data = new JSONArray();
 
-        try (Workbook workbook = getWorkbook(excelFile)) {
-            if (workbook.getNumberOfSheets() > 0) {
-                Sheet sheet = workbook.getSheetAt(0);
-                int lastRowNum = sheet.getLastRowNum();
+        if (workbook.getNumberOfSheets() > 0) {
+            Sheet sheet = workbook.getSheetAt(0);
+            int lastRowNum = sheet.getLastRowNum();
 
-                // Process Header (Row 0)
-                Row headerRow = sheet.getRow(0);
-                int maxColIx = 0;
-                if (headerRow != null) {
-                    maxColIx = headerRow.getLastCellNum();
-                    for (int i = 0; i < maxColIx; i++) {
-                        Cell cell = headerRow.getCell(i);
-                        String colName = getExcelColumnName(i) + "1";
-                        if (cell != null) {
-                            header.put(colName, cell.toString());
-                        } else {
-                            header.put(colName, "");
-                        }
+            // Process Header (Row 0)
+            Row headerRow = sheet.getRow(0);
+            int maxColIx = 0;
+            if (headerRow != null) {
+                maxColIx = headerRow.getLastCellNum();
+                for (int i = 0; i < maxColIx; i++) {
+                    Cell cell = headerRow.getCell(i);
+                    String colName = getExcelColumnName(i) + "1";
+                    if (cell != null) {
+                        header.put(colName, cell.toString());
+                    } else {
+                        header.put(colName, "");
                     }
                 }
+            }
 
-                // Process Data (Rows 1 to lastRowNum)
-                for (int i = 1; i <= lastRowNum; i++) {
-                    Row row = sheet.getRow(i);
-                    JSONObject rowData = new JSONObject();
-                    rowData.put("index", i);
+            // Process Data (Rows 1 to lastRowNum)
+            for (int i = 1; i <= lastRowNum; i++) {
+                Row row = sheet.getRow(i);
+                JSONObject rowData = new JSONObject();
+                rowData.put("index", i);
 
-                    for (int j = 0; j < maxColIx; j++) {
-                        String key = getExcelColumnName(j) + "1";
-                        JSONObject cellObj = new JSONObject();
+                for (int j = 0; j < maxColIx; j++) {
+                    String key = getExcelColumnName(j) + "1";
+                    JSONObject cellObj = new JSONObject();
 
-                        int targetRow = i;
-                        int targetCol = j;
+                    int targetRow = i;
+                    int targetCol = j;
 
-                        if (sheet.getMergedRegions() != null) {
-                            for (CellRangeAddress region : sheet.getMergedRegions()) {
-                                if (region.isInRange(i, j)) {
-                                    targetRow = region.getFirstRow();
-                                    targetCol = region.getFirstColumn();
-                                    break;
-                                }
+                    if (sheet.getMergedRegions() != null) {
+                        for (CellRangeAddress region : sheet.getMergedRegions()) {
+                            if (region.isInRange(i, j)) {
+                                targetRow = region.getFirstRow();
+                                targetCol = region.getFirstColumn();
+                                break;
                             }
                         }
-
-                        Row srcRow = sheet.getRow(targetRow);
-                        Cell srcCell = (srcRow != null) ? srcRow.getCell(targetCol) : null;
-                        String srcColName = getExcelColumnName(targetCol);
-                        String srcCoord = srcColName + (targetRow + 1);
-
-                        if (!fileMap.isEmpty() && fileMap.containsKey(srcCoord)) {
-                            cellObj.put("type", "file");
-                            cellObj.put("value", fileMap.get(srcCoord));
-                        } else {
-                            setCellValue(cellObj, srcCell);
-                        }
-
-                        rowData.put(key, cellObj);
                     }
-                    data.add(rowData);
+
+                    Row srcRow = sheet.getRow(targetRow);
+                    Cell srcCell = (srcRow != null) ? srcRow.getCell(targetCol) : null;
+                    String srcColName = getExcelColumnName(targetCol);
+                    String srcCoord = srcColName + (targetRow + 1);
+
+                    if (!fileMap.isEmpty() && fileMap.containsKey(srcCoord)) {
+                        cellObj.put("type", "file");
+                        cellObj.put("value", fileMap.get(srcCoord));
+                    } else {
+                        setCellValue(cellObj, srcCell);
+                    }
+
+                    rowData.put(key, cellObj);
                 }
+                data.add(rowData);
             }
         }
         json.put("header", header);
@@ -270,10 +273,12 @@ public class Excel2JsonUtil {
         }
     }
 
-    private Map<String, String> extractFilesFromExcel(File excelFile) throws IOException {
-        Map<String, String> result = new HashMap<>();
+    private Map<String, String> extractFilesFromExcel(Workbook workbook, String originalFileName) {
+        Map<String, String> result = new ConcurrentHashMap<>();
 
-        try (Workbook workbook = getWorkbook(excelFile)) {
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            List<CompletableFuture<Void>> futures = new ArrayList<>();
+
             // 记录Excel文件类型信息
             log.debug("Excel file type: {}", workbook.getClass().getName());
 
@@ -311,9 +316,7 @@ public class Excel2JsonUtil {
                             try {
                                 byte[] fileData = obj.getObjectData();
                                 String coord = getShapeCoordinate(shape);
-                                String fileName = saveEmbeddedFile(fileData, excelFile.getName());
-                                result.put(coord, fileName);
-                                log.debug("Extracted HSSF embedded file at {} saved as {}", coord, fileName);
+                                submitUploadTask(fileData, originalFileName, coord, executor, futures, result);
                             } catch (Exception e) {
                                 log.error("Error extracting HSSFObjectData: {}", e.getMessage(), e);
                             }
@@ -325,9 +328,7 @@ public class Excel2JsonUtil {
                                 PictureData pictureData = picture.getPictureData();
                                 byte[] fileData = pictureData.getData();
                                 String coord = getShapeCoordinate(shape);
-                                String fileName = saveEmbeddedFile(fileData, excelFile.getName());
-                                result.put(coord, fileName);
-                                log.debug("Extracted HSSF picture at {} saved as {}", coord, fileName);
+                                submitUploadTask(fileData, originalFileName, coord, executor, futures, result);
                             } catch (Exception e) {
                                 log.error("Error extracting HSSFPicture: {}", e.getMessage(), e);
                             }
@@ -358,19 +359,17 @@ public class Excel2JsonUtil {
                                     try (InputStream is = packagePart.getInputStream()) {
                                         byte[] fileData = is.readAllBytes();
                                         String coord = getShapeCoordinate(shape);
-                                        String fileName = saveEmbeddedFile(fileData, excelFile.getName());
-                                        result.put(coord, fileName);
-                                        log.debug("Extracted XSSF embedded file at {} saved as {}", coord, fileName);
+                                        submitUploadTask(fileData, originalFileName, coord, executor, futures, result);
                                     }
                                 } else {
                                     log.debug("PackagePart is null or not available for XSSF object, trying fallback methods");
                                     // 尝试备用方法
-                                    extractXSSFObjectDataFallback(obj, shape, excelFile.getName(), result);
+                                    extractXSSFObjectDataFallback(obj, shape, originalFileName, result, executor, futures);
                                 }
                             } catch (Exception e) {
                                 log.error("Error extracting XSSF embedded file: {}", e.getMessage());
                                 // 尝试备用方法
-                                extractXSSFObjectDataFallback(obj, shape, excelFile.getName(), result);
+                                extractXSSFObjectDataFallback(obj, shape, originalFileName, result, executor, futures);
                             }
                         }// 处理HSSFPicture类型
                         else if (shape instanceof XSSFPicture picture) {
@@ -379,9 +378,7 @@ public class Excel2JsonUtil {
                                 PictureData pictureData = picture.getPictureData();
                                 byte[] fileData = pictureData.getData();
                                 String coord = getShapeCoordinate(shape);
-                                String fileName = saveEmbeddedFile(fileData, excelFile.getName());
-                                result.put(coord, fileName);
-                                log.debug("Extracted HSSF picture at {} saved as {}", coord, fileName);
+                                submitUploadTask(fileData, originalFileName, coord, executor, futures, result);
                             } catch (Exception e) {
                                 log.error("Error extracting HSSFPicture: {}", e.getMessage(), e);
                             }
@@ -389,8 +386,25 @@ public class Excel2JsonUtil {
                     }
                 }
             }
+
+            if (!futures.isEmpty()) {
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            }
         }
         return result;
+    }
+
+    private void submitUploadTask(byte[] fileData, String originalFileName, String coord, ExecutorService executor, List<CompletableFuture<Void>> futures, Map<String, String> result) {
+        CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
+            try {
+                String fileName = saveEmbeddedFile(fileData, originalFileName);
+                result.put(coord, fileName);
+                log.debug("Extracted embedded file at {} saved as {}", coord, fileName);
+            } catch (IOException e) {
+                log.error("Error uploading file for coord {}", coord, e);
+            }
+        }, executor);
+        futures.add(future);
     }
 
     private String getShapeCoordinate(Object shape) {
@@ -477,16 +491,15 @@ public class Excel2JsonUtil {
         return ".bin";
     }
 
-    private void extractXSSFObjectDataFallback(XSSFObjectData obj, XSSFShape shape, String excelFileName, Map<String, String> result) {
+    private void extractXSSFObjectDataFallback(XSSFObjectData obj, XSSFShape shape, String excelFileName, Map<String, String> result, ExecutorService executor, List<CompletableFuture<Void>> futures) {
         log.debug("Starting fallback extraction methods for XSSF object");
         try {
             // 尝试方法1：直接获取对象数据 - 最可靠的方法
             byte[] fileData = obj.getObjectData();
             if (fileData != null && fileData.length > 0) {
                 String coord = getShapeCoordinate(shape);
-                String fileName = saveEmbeddedFile(fileData, excelFileName);
-                result.put(coord, fileName);
-                log.debug("Extracted XSSF embedded file (fallback-1) at {} saved as {}", coord, fileName);
+                submitUploadTask(fileData, excelFileName, coord, executor, futures, result);
+                log.debug("Extracted XSSF embedded file (fallback-1) at {} saved", coord);
                 return;
             } else {
                 log.debug("Fallback method 1: Object data is null or empty");
@@ -512,9 +525,8 @@ public class Excel2JsonUtil {
 
                     if (fileData != null && fileData.length > 0) {
                         String coord = getShapeCoordinate(shape);
-                        String fileName = saveEmbeddedFile(fileData, excelFileName);
-                        result.put(coord, fileName);
-                        log.debug("Extracted XSSF embedded file (fallback-2) at {} saved as {}", coord, fileName);
+                        submitUploadTask(fileData, excelFileName, coord, executor, futures, result);
+                        log.debug("Extracted XSSF embedded file (fallback-2) at {} saved", coord);
                     }
                 }
             }
@@ -540,9 +552,8 @@ public class Excel2JsonUtil {
 
                     if (fileData != null && fileData.length > 0) {
                         String coord = getShapeCoordinate(shape);
-                        String fileName = saveEmbeddedFile(fileData, excelFileName);
-                        result.put(coord, fileName);
-                        log.debug("Extracted XSSF embedded file (fallback-3) at {} saved as {}", coord, fileName);
+                        submitUploadTask(fileData, excelFileName, coord, executor, futures, result);
+                        log.debug("Extracted XSSF embedded file (fallback-3) at {} saved", coord);
                     }
                 }
             }
