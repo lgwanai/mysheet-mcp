@@ -7,12 +7,18 @@ Mysheet-mcp 是一个用于将 Excel 文件转换为 JSON 格式的 MCP 服务�
 - **Excel 转 JSON**：将上传的 Excel 文件转换为 JSON 格式，包含详细的单元格类型信息（文本、数字、货币、日期等）。
 - **行对象模式**：支持 "row-object" 解析模式，将每一行视为一个对象，支持合并单元格处理。
 - **腾讯云 COS 集成**：自动将 Excel 中嵌入的文件上传到腾讯云 COS，并在 JSON 输出中使用 COS URL。
+- **高性能转换**：
+    - **虚拟线程并发**：利用 Java 21 虚拟线程 (Virtual Threads) 技术并行上传内嵌文件，大幅提升包含大量图片/文件的 Excel 处理速度。
+    - **资源优化**：重构解析逻辑，确保 Workbook 只打开一次，减少重复 I/O，显著降低大文件转换耗时。
+- **会话管理**：
+    - 提供 `openFile`、`foreach`、`reset` 接口，支持大文件分批次读取。
+    - 会话状态（Session）在内存中保持 24 小时，支持断点续传和指针管理。
 - **缓存机制**：基于 MD5 的缓存机制，避免重复解析相同文件。
 - **MCP SSE 支持**：提供服务器发送事件（SSE）端点用于 MCP 通信。
 
 ## 系统要求
 
-- Java 17 或更高版本
+- **Java 21** 或更高版本（必须，用于支持虚拟线程）
 - Maven 3.6 或更高版本
 - 腾讯云 COS 账户（用于文件存储）
 
@@ -68,22 +74,6 @@ cos:
   bucket-name: YOUR_BUCKET_NAME   # COS 存储桶名称
 ```
 
-### 配置参数详解
-
-#### 服务器配置
-- `server.port`：MCP 服务器监听的端口号，默认为 8080。
-- `spring.ai.mcp.server.sse-message-endpoint`：SSE 消息端点路径，客户端通过此路径连接 MCP 服务器。
-
-#### 存储配置
-- `storage.file`：上传 Excel 文件临时存储目录，确保该目录有读写权限。
-- `storage.cache`：缓存目录，用于存储已解析文件的 JSON 结果，基于 MD5 值进行缓存。
-
-#### 腾讯云 COS 配置
-- `cos.secret-id`：腾讯云访问密钥 ID，从腾讯云控制台获取。
-- `cos.secret-key`：腾讯云访问密钥 Key，从腾讯云控制台获取。
-- `cos.region`：COS 存储桶所在地域，如 `ap-beijing`（北京）。
-- `cos.bucket-name`：COS 存储桶名称，格式为 `bucketname-appid`。
-
 ## 启动服务器
 
 ### 1. 开发环境启动
@@ -107,41 +97,54 @@ java -jar target/mysheet-mcp-0.0.1-SNAPSHOT.jar
 - 访问 `http://localhost:8080/actuator/health` 检查健康状态
 - 查看控制台日志，确认 MCP 服务器已启动
 
-## 使用方式
+## 使用方式 (MCP Tools)
 
-### 1. 通过 MCP 客户端连接
-MCP 客户端可以通过 SSE 端点连接到服务器：
-```
-http://localhost:8080/sse
-```
+本服务器提供以下 MCP 工具供 Agent 调用：
 
-### 2. 调用 Excel 转 JSON 服务
-通过 MCP 调用 `excel2Json` 工具：
+### 1. excel2Json
+一次性将整个 Excel 文件转换为 JSON。
 
-**参数说明：**
-- `excelFileURL`：Excel 文件的 URL 地址（必需）
-- `type`：解析模式，可选值：
-  - `basic`：基础模式（默认）
-  - `row-object`：行对象模式
+- **参数**：
+    - `excelFileURL` (String): Excel 文件的 URL 或本地路径。
+    - `type` (String): 解析模式，`basic` (默认) 或 `row-object`。
+- **返回**：完整的 JSON 数据字符串。
 
-**示例调用：**
-```json
-{
-  "tool": "excel2Json",
-  "parameters": {
-    "excelFileURL": "https://example.com/test.xlsx",
-    "type": "row-object"
-  }
-}
-```
+### 2. openFile (会话模式)
+打开 Excel 文件并创建一个读取会话，适用于大文件处理。
 
-### 3. 直接调用 API（可选）
-服务器也提供 REST API 端点：
-```bash
-curl -X POST http://localhost:8080/api/excel2json \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://example.com/test.xlsx", "type": "row-object"}'
-```
+- **参数**：
+    - `excelFileURL` (String): Excel 文件的 URL 或本地路径。
+    - `type` (String): 解析模式，`basic` 或 `row-object`。
+    - `offset` (int, 可选): 起始行号，默认为 0。
+- **返回**：包含会话信息的 JSON 对象。
+    ```json
+    {
+      "text": "sessionId_string",
+      "sessionId": "sessionId_string",
+      "files": [],
+      "json": [ { "data": [] } ]
+    }
+    ```
+    - `sessionId`: 会话唯一标识，用于后续操作。
+    - `text`: 兼容性字段，同 `sessionId`。
+
+### 3. foreach (遍历会话)
+读取当前会话的下一批数据。
+
+- **参数**：
+    - `sessionId` (String): `openFile` 返回的会话 ID。
+    - `limit` (int, 可选): 读取行数限制，默认为 10。
+- **返回**：包含数据的 JSON 字符串。
+    - 如果还有数据：返回数据 JSON。
+    - 如果已读完：返回提示信息或空数据。
+
+### 4. reset (重置会话)
+重置会话的读取指针到指定位置。
+
+- **参数**：
+    - `sessionId` (String): 会话 ID。
+    - `offset` (int): 重置到的行号（从 0 开始）。
+- **返回**：重置成功的提示信息。
 
 ## 解析模式详解
 
@@ -201,39 +204,12 @@ curl -X POST http://localhost:8080/api/excel2json \
         "type": "file",
         "value": "https://chinamobile-1320739042.cos.ap-beijing.myqcloud.com/attachment/20251230001822713_test.png"
       }
-    },
-    {
-      "index": 2,
-      "A1": {
-        "type": "text",
-        "value": "属性2"
-      },
-      "B1": {
-        "type": "money",
-        "value": "￥1,000.00"
-      },
-      "C1": {
-        "type": "money",
-        "value": "￥1,000.00"
-      },
-      "D1": {
-        "type": "number",
-        "value": 0.5
-      }
     }
   ],
   "filename": "test.xls",
   "md5": "a1b2c3d4e5f678901234567890123456"
 }
 ```
-
-### 输出字段说明
-- `header`：表头信息，键为单元格位置，值为表头文本
-- `data`：数据行数组，每行包含：
-  - `index`：行索引（从1开始）
-  - 单元格数据：键为单元格位置，值为包含 `type` 和 `value` 的对象
-- `filename`：原始文件名
-- `md5`：文件的 MD5 哈希值，用于缓存标识
 
 ## 缓存机制
 
@@ -243,24 +219,17 @@ curl -X POST http://localhost:8080/api/excel2json \
 3. 如果缓存存在且有效，直接返回缓存内容
 4. 如果缓存不存在或无效，重新解析文件并保存到缓存
 
-### 缓存文件命名规则
-- 基础模式：`{md5}.json`
-- 行对象模式：`{md5}_row-object.json`
-
-### 手动清理缓存
-```bash
-# 清理所有缓存
-rm -rf /var/mysheet-mcp/cache/*
-
-# 或通过配置的 storage.cache 目录清理
-```
+### 会话缓存
+- 会话数据（SessionData）存储在内存中（TimedCache）。
+- 有效期：**24 小时**。
+- 清理策略：每小时自动清理过期会话。
 
 ## 故障排除
 
 ### 常见问题
 
 1. **服务器启动失败**
-   - 检查 Java 版本是否为 17+
+   - **检查 Java 版本是否为 21+** (本项目使用了虚拟线程，必须使用 JDK 21)。
    - 检查端口 8080 是否被占用
    - 检查 COS 配置是否正确
 
@@ -290,33 +259,14 @@ mysheet-mcp/
 │   ├── main/
 │   │   ├── java/link/wo/mysheetmcp/
 │   │   │   ├── service/          # 服务层
-│   │   │   │   ├── Excel2JsonService.java
+│   │   │   │   ├── Excel2JsonService.java # 核心业务逻辑，含会话管理
 │   │   │   │   └── CosService.java
 │   │   │   ├── util/             # 工具类
-│   │   │   │   └── Excel2JsonUtil.java
+│   │   │   │   └── Excel2JsonUtil.java    # Excel 解析与虚拟线程优化
 │   │   │   └── McpServerApplication.java
 │   │   └── resources/
 │   │       └── application.yml   # 配置文件
 │   └── test/                     # 测试代码
-├── pom.xml                       # Maven 配置
+├── pom.xml                       # Maven 配置 (需 Java 21)
 └── README.md                     # 本文档
 ```
-
-## 贡献指南
-
-1. Fork 项目
-2. 创建功能分支
-3. 提交更改
-4. 推送到分支
-5. 创建 Pull Request
-
-## 许可证
-
-[在此添加许可证信息]
-
-## 支持与反馈
-
-如有问题或建议，请通过以下方式联系：
-- 提交 Issue
-- 发送邮件
-- 其他联系方式
